@@ -84,7 +84,15 @@ async function main() {
 	})
 
 	// 8. Graceful Shutdown
-	const stop = () => bot.stop()
+	const stop = async () => {
+		logger.info('Stopping bot...')
+		try {
+			await bot.stop()
+		} catch (e) {
+			logger.warn('Error during bot stop:', e)
+		}
+		process.exit(0)
+	}
 	process.once('SIGINT', stop)
 	process.once('SIGTERM', stop)
 

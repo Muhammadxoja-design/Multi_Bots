@@ -2,7 +2,7 @@ require('dotenv').config()
 const { spawn } = require('child_process')
 const path = require('path')
 const express = require('express')
-const startGrainBot = require('./bot-2/bot')
+const startGrainBot = require('./grain-bot/bot')
 
 const app = express()
 const PORT = process.env.PORT || 3000
@@ -14,7 +14,7 @@ app.get('/health', (req, res) =>
 
 // Add specific bot status endpoints if reachable, for now just generic
 app.get('/bot1/health', (req, res) => res.json({ status: 'running' }))
-app.get('/bot2/health', (req, res) => res.json({ status: 'running' }))
+app.get('/grain-bot/health', (req, res) => res.json({ status: 'running' }))
 
 app.listen(PORT, () => console.log(`🌍 Web Server running on port ${PORT}`))
 
@@ -40,6 +40,7 @@ startGrainBot({
 	botToken: process.env.BOT_TOKEN_2,
 	groqKey: process.env.GROQ_API_KEY_2,
 	orderGroupId: process.env.FORUM_CHAT_ID_2,
+	adminId: process.env.ADMIN_ID_2,
 }).catch(err => console.error('❌ Bot 2 Error:', err))
 
 // --- Process Management ---
