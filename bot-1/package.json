@@ -6,7 +6,8 @@
 	"scripts": {
 		"dev": "drizzle-kit push && tsx watch src/main.ts",
 		"build": "tsc",
-		"start": "drizzle-kit push && node dist/main.js",
+		"start": "node dist/main.js",
+		"db:push": "drizzle-kit push",
 		"lint": "eslint src --ext .ts"
 	},
 	"keywords": [
