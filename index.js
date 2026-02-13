@@ -23,8 +23,8 @@ console.log('🚀 Starting Multi-Bot System...')
 // --- Bot 1: Personal Assistant (Legacy Runner) ---
 console.log('🤖 Launching Bot 1 (Assistant)...')
 const botPath = path.join(__dirname, 'bot-1')
-// Use 'start' in production, 'dev' in development
-const bot1Script = process.env.NODE_ENV === 'production' ? 'start' : 'dev'
+// Use 'dev' only in development, 'start' everywhere else (including production)
+const bot1Script = process.env.NODE_ENV === 'development' ? 'dev' : 'start'
 const botProcess = spawn('npm', ['run', bot1Script], {
 	cwd: botPath,
 	stdio: 'inherit',

@@ -5,7 +5,8 @@
 	"scripts": {
 		"start": "node index.js",
 		"dev": "node index.js",
-		"build": "cd bot-1 && npm run build"
+		"build": "cd bot-1 && npm run build",
+		"postinstall": "npm run build"
 	},
 	"keywords": [],
 	"author": "",
