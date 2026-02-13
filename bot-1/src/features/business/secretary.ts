@@ -1,9 +1,9 @@
 import { config } from '@/config/env'
-import { MyContext } from '@/core/context' // Yoki sizdagi context path
+import { MyContext } from '@/core/context'
 import { db } from '@/db'
-import { crm_profiles, messages, settings } from '@/db/schema' // crm_profiles qo'shildi
+import { crmProfiles, messages, settings } from '@/db/schema'
 import { GroqService } from '@/services/groq'
-import { extractBusinessInfo, sendBusinessChatAction } from '@/utils/business' // Yoki utils path
+import { extractBusinessInfo, sendBusinessChatAction } from '@/utils/business'
 import { logger } from '@/utils/logger'
 import { desc, eq } from 'drizzle-orm'
 
@@ -38,10 +38,9 @@ export class Secretary {
 
 		// 4. Yangi xabarni bazaga saqlash
 		await db.insert(messages).values({
-			peerId: senderId, // Yoki user_id (sizning schema'ga qarab)
+			peerId: senderId,
 			role: 'user',
 			content: text,
-			createdAt: new Date(), // Agar default bo'lmasa
 		})
 
 		// 5. TARIXNI OLISH (Miyani tozalash qismi)
@@ -51,14 +50,19 @@ export class Secretary {
 			.from(messages)
 			.where(eq(messages.peerId, senderId))
 			.orderBy(desc(messages.createdAt))
+			// Skip the one we just inserted to avoid duplication in history prompt
+			// (Since we pass current text separately to Groq, or we used to.
+			// The updated logic below passes [] to Groq and uses system prompt for history.
+			// So recentMessages SHOULD include the current message if we want it in the prompt's history block.
+			// BUT the code below has `.filter(msg => msg.content !== text)`.
+			// That filter is RISKY if user says "Salom" and history has "Salom" from 2 days ago.
+			// Better: use offset(1) to strictly skip the specific last record we inserted.)
+			.offset(1)
 			.limit(6)
 
 		// Tarixni to'g'irlash (Eng yangisi pastda bo'lishi kerak)
-		// Va eng muhimi: Hozirgi yozgan xabarimizni tarix ichidan olib tashlaymiz,
-		// chunki uni alohida 'text' sifatida beramiz.
 		const historyText = recentMessages
 			.reverse()
-			.filter(msg => msg.content !== text) // Hozirgi xabarni takrorlamaslik uchun
 			.map(msg => {
 				const role = msg.role === 'user' ? 'User' : 'Assistant'
 				const content = msg.content || ''
@@ -67,13 +71,13 @@ export class Secretary {
 			.join('\n')
 
 		// 6. CRM (Foydalanuvchi kimligini aniqlash)
-		// Agar crm_profiles jadvali bo'lsa, undan ma'lumot olamiz
+		// Agar crmProfiles jadvali bo'lsa, undan ma'lumot olamiz
 		let userSummary = "Noma'lum"
 		try {
 			const profile = await db
 				.select()
-				.from(crm_profiles)
-				.where(eq(crm_profiles.peerId, senderId))
+				.from(crmProfiles)
+				.where(eq(crmProfiles.userId, senderId))
 				.limit(1)
 			if (profile[0]) userSummary = profile[0].summary || "Noma'lum"
 		} catch (e) {
@@ -146,7 +150,6 @@ export class Secretary {
 					peerId: senderId,
 					role: 'assistant',
 					content: cleanResponse,
-					createdAt: new Date(),
 				})
 
 				// 11. LOG GURUHGA TASHLASH
