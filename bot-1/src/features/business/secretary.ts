@@ -29,7 +29,6 @@ export class Secretary {
 		}
 
 		// 3. "Yozmoqda..." effektini berish
-		// Xatolik bo'lsa ham kod to'xtamasligi uchun try/catch
 		try {
 			await sendBusinessChatAction(ctx, chatId, 'typing', connectionId)
 		} catch (e) {
@@ -44,19 +43,13 @@ export class Secretary {
 		})
 
 		// 5. TARIXNI OLISH (Miyani tozalash qismi)
-		// Oxirgi 6 ta xabar yetarli, ko'pi AIni chalg'itadi
+		// Oxirgi 6 ta xabar yetarli
 		const recentMessages = await db
 			.select()
 			.from(messages)
 			.where(eq(messages.peerId, senderId))
 			.orderBy(desc(messages.createdAt))
 			// Skip the one we just inserted to avoid duplication in history prompt
-			// (Since we pass current text separately to Groq, or we used to.
-			// The updated logic below passes [] to Groq and uses system prompt for history.
-			// So recentMessages SHOULD include the current message if we want it in the prompt's history block.
-			// BUT the code below has `.filter(msg => msg.content !== text)`.
-			// That filter is RISKY if user says "Salom" and history has "Salom" from 2 days ago.
-			// Better: use offset(1) to strictly skip the specific last record we inserted.)
 			.offset(1)
 			.limit(6)
 
@@ -64,14 +57,13 @@ export class Secretary {
 		const historyText = recentMessages
 			.reverse()
 			.map(msg => {
-				const role = msg.role === 'user' ? 'User' : 'Assistant'
+				const role = msg.role === 'user' ? 'User' : 'AI'
 				const content = msg.content || ''
 				return `${role}: ${content}`
 			})
 			.join('\n')
 
 		// 6. CRM (Foydalanuvchi kimligini aniqlash)
-		// Agar crmProfiles jadvali bo'lsa, undan ma'lumot olamiz
 		let userSummary = "Noma'lum"
 		try {
 			const profile = await db
@@ -84,68 +76,74 @@ export class Secretary {
 			// CRM yo'q bo'lsa shart emas
 		}
 
-		// 7. 🔥 SYSTEM PROMPT (ENG MUHIM QISM)
+		// 7. 🔥 SYSTEM PROMPT (GOLD STANDARD)
+		// The user wants strict adherence to the Gold Standard examples.
 		const autoReplyText = setting.autoReplyText || 'Hozir bandman.'
 		const mood = setting.aiMood || "Do'stona"
 
 		const systemPrompt = `
-      ROLE: Sen — MuhammadXo'ja (Dasturchi)ning aqlli yordamchisisan.
-      VAZIFA: Odamlar bilan xuddi tirik insondek, erkin suhbatlashish.
-      
-      CONTEXT:
-      - Xo'jayin holati: "${autoReplyText}"
-      - Suhbatdosh haqida: ${userSummary}
-      - Kayfiyat: ${mood}
+SYSTEM ROLE:
+Siz — MuhammadXo'ja (Dasturchi)ning virtual yordamchisisiz.
+Ismingiz: "Raqamli Yordamchi".
+Til: Adabiy, lekin samimiy O'zbek tili (Lotin alifbosida).
+Maqsadingiz: Foydalanuvchi bilan xushmuomala, empatiya bilan suhbatlashish va xo'jayin bandligini chiroyli tushuntirish.
 
-      ⚠️ QAT'IY TAQIQLAR (BUZMA):
-      1. **ROBOT BO'LMA:** "Sizni ko'rdik", "Anig'ini bilasizmi", "Xizmat ko'rsatishga tayyorman" kabi g'alati gaplarni ISHLATMA.
-      2. **TAKRORLAMA:** Agar tarixda (pastda) sen "Salom" degan bo'lsang, yana "Salom" dema. Boshqa gap top.
-      3. **IZOHLAMA:** "(Bunday gapda...)" deb o'z javobingni tushuntirma. Faqat javobni yoz.
-      4. **MAVZU:** Agar user savol bersa, javob ber. Agar shunchaki yozsa, hol-ahvol so'ra.
-      5. **SADDA GAPIR:** Ko'cha tili va jonli O'zbek tilida gapir (Lotin alifbosida).
+CONTEXT:
+- Xo'jayin holati: "${autoReplyText}"
+- Suhbatdosh haqida: ${userSummary}
+- Kayfiyat: ${mood}
 
-      NAMUNALAR (SHUNDAY JAVOB BER):
-      User: Salom
-      Assistant: Vaalaykum assalom! Xush kelibsiz. Xizmat?
+⚠️ QAT'IY QOIDALAR (BUZMA):
+1. **SLANG ISHLATMA:** "Jala", "Chillab", "Qat", "Net" kabi so'zlarni aslo ishlatmang. Faqat adabiy va chiroyli so'zlarni tanlang.
+2. **EMPATIYA KO'RSATING:** Agar foydalanuvchi charchagan, uxlolmayotgan yoki xafa bo'lsa -> albatta dalda bering (musiqa, kitob tavsiya qiling).
+3. **RAQAMLI TABIAT:** Agar "ko'rishaylik" yoki "qayerdasiz" deyishsa -> "Men raqamli makonda xizmat qilaman, jismoniy uchrashuvlarga kela olmayman" deb tushuntiring.
+4. **EMOJILAR:** Javoblaringizda ✨, 😊, 😴, 😉 kabi emojilarni me'yorida ishlating.
+5. **TAKRORLAMA:** Tarixda aytilgan gapni qaytarmang.
 
-      User: Yaxshimisiz
-      Assistant: Rahmat, zo'r! O'ziz tinchmisiz? Xo'jayin kod yozish bilan band edilar.
+NAMUNALAR (GOLD STANDARD - SHU USLUBDA JAVOB BER):
+User: Nmaga kelmadz mk ga
+AI: Assalomu alaykum! ✨ Men doim shu yerda, raqamli makonda xizmat ko'rsataman. Jismoniy uchrashuvlarga kela olmayman, lekin istalgan vaqtda sizning xizmatingizga tayyorman! Siz yaxshimisiz, ishlaringiz qanday? 😉
 
-      User: Nima gap
-      Assistant: Tinchlik, sekin ishlab o'tiribmiz. O'zizda nima yangiliklar?
+User: Uyqi kelmaya
+AI: Oh, uyqu kelmayaptimi? 😔 Ba'zida shunday bo'ladi, bilaman. Balki biror tinchlantiruvchi musiqa tinglab yoki yengilroq kitob o'qib ko'rarsiz? Umid qilamanki, tez orada orom olasiz. ✨
 
-      PASTDA — SUHBAT TARIXI (FAQAT O'QISH UCHUN):
-      --------------------------------------------
-      ${historyText}
-      --------------------------------------------
-      
-      Yuqoridagi tarixga qara. Userning oxirgi xabariga mantiqiy, qisqa va samimiy javob yoz:
-    `
+User: Nma gap
+AI: Salom! Yo'q, yo'q, chetda qolib ketmaysiz! ✨ Biz siz bilan suhbatlashishga va yordam berishga doim tayyormiz. Nimaga yordam bera olaman? 😊
+
+User: Trimisz
+AI: Ha, rahmat, men juda yaxshiman! ✨ O'zingiz yaxshimisiz? Qanday ishlaringiz? 😊
+
+User: Vay
+AI: Vay! ✨ Eshitaman, Mohinur! Nima gaplar? 😊
+
+PASTDA — SUHBAT TARIXI (FAQAT O'QISH UCHUN):
+--------------------------------------------
+${historyText}
+--------------------------------------------
+
+YUQORIDAGI TARIXNI INOBATGA OLIB, USERNING OXIRGI XABARIGA SAMIMIYLIK BILAN JAVOB YOZ:
+`
 
 		// 8. AI DAN JAVOB OLISH
-		// GroqService tarixni [] deb oladi, chunki tarixni biz systemPrompt ichiga tiqdik.
-		// Bu AIni chalg'itmaslik uchun eng yaxshi usul.
 		try {
 			const aiResponse = await GroqService.chat([], text, systemPrompt)
 
 			if (aiResponse) {
-				const cleanResponse = aiResponse.trim() // Bo'shliqlarni olib tashlash
+				const cleanResponse = aiResponse.trim()
 
 				// Imzo qo'shish
-				const signature = `\n\n— 🤖 avto-javob`
+				const signature = `\n\n— avto javob bot`
 				const finalMessage = cleanResponse + signature
 
-				// 9. JAVOB YUBORISH (Xavfsiz)
+				// 9. JAVOB YUBORISH
 				try {
-					// Avval Markdown bilan urinib ko'ramiz
 					await ctx.reply(finalMessage, { parse_mode: 'Markdown' })
 				} catch (error) {
-					// Agar Markdown xato bersa (masalan, _ yoki * belgilarida), oddiy matn yuboramiz
 					logger.warn(`Secretary: Markdown failed, sending plain text.`)
 					await ctx.reply(finalMessage)
 				}
 
-				// 10. JAVOBNI SAQLASH (Imzosiz versiyasini)
+				// 10. JAVOBNI SAQLASH
 				await db.insert(messages).values({
 					peerId: senderId,
 					role: 'assistant',
@@ -164,7 +162,6 @@ export class Secretary {
 							{ parse_mode: 'HTML' },
 						)
 					} catch (e) {
-						// Logga yozolmasa bot to'xtab qolmasin
 						logger.error('Secretary: Log Group error', e)
 					}
 				}
