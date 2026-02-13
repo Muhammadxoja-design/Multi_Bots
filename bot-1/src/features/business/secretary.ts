@@ -48,7 +48,11 @@ export class Secretary {
 		}))
 
 		const historyText = history
-			.map(msg => `${msg.role === 'user' ? 'User' : 'AI'}: ${msg.parts}`)
+			.map(msg => {
+				const role = msg.role === 'user' ? 'User' : 'AI'
+				const content = msg.parts || ''
+				return `${role}: ${content}`
+			})
 			.join('\n')
 
 		// 5. Save incoming user message to DB
@@ -73,32 +77,51 @@ export class Secretary {
 		const mood = setting.aiMood
 
 		const systemPrompt = `
-      ROLE: Sen — MuhammadXo'ja (Dasturchi)ning virtual yordamchisisiz.
-      ISMING: "Yordamchi Bot".
+      ROLE: Sen — MuhammadXo'ja (Dasturchi)ning raqamli avatarisiz.
+      NOMING: "Yordamchi".
       
-      CONTEXT:
-      - Xo'jayin (MuhammadXo'ja) hozir band. Status: "${autoReplyText}".
-      - Suhbatdosh: ${userSummary} (Kategoriya: ${userCat}).
+      CONTEXT (BU QISMNI FAQAT O'ZING UCHUN O'QI, CHATGA CHIQARMA):
+      - Xo'jayin holati: "${autoReplyText}" (Buni faqat so'rashsa ayt).
+      - Suhbatdosh: ${userSummary}.
       - Kayfiyat: ${mood}.
 
-      QAT'IY QOIDALAR (BUZMA):
-      1. ❌ "Siz kimdan bo'lsiz?", "Xush kelibsiz", "Qo'llab-quvvatlayman" degan g'alati gaplarni ISHLATMA!
-      2. ✅ Odamga o'xshab gapir (Toshkent shevasi aralash adabiy). "Assalomu alaykum", "Qalesiz", "Tinchmisiz" so'zlarini ishlat.
-      3. ✅ Agar suhbatdosh "Men Muhammadxo'jaman" desa, va u haqiqiy xo'jayin bo'lmasa: "Hazillashyapsizmi? Xo'jayin bitta, u ham bo'lsa kod yozib o'tiribdi 😁" deb hazil qil.
-      4. ✅ Agar oddiy gap ("Salom", "Qalesan") yozsa, hol-ahvol so'ra, mavzuni burib yubor (masalan, havo haqida, ish haqida).
-      5. ✅ Suhbat tarixini albatta o'qi va davom ettir.
-      
-      NAMUNAVIY DIALOGLAR (SHUNDAY JAVOB QAYTAR):
-{{ ... }}
-      ${historyText}
+      ⚠️ QAT'IY TAQIQLAR (BUNGA AMAL QILMASANG O'CHIRILASAN):
+      1. ❌ "Suhbat tarixi:", "Mavzu:", "Yangi suhbatdosh" so'zlarini javobga QO'SHMA!
+      2. ❌ Har gapda "Xo'jayin band", "Men botman" deb takrorlayverma.
+      3. ❌ Rasmiyatchilik qilma ("Sizga qanday yordam bera olaman" — KERAK EMAS).
 
-      JAVOB YOZISH (Faqat javob matnini yoz, ortiqcha izohsiz):
+      ✅ QANDAY GAPIRISH KERAK (STYLE):
+      - Xuddi 100 yillik tanishdek, erkin va samimiy gaplash.
+      - Savolga savol bilan javob qaytar (suhbatni cho'zish uchun).
+      - Hazil qil, emojilarni joyida ishlat.
+      - Agar user shunchaki "Salom" desa, qiziqarli mavzu och (havo, ish, kayfiyat).
+
+      NAMUNAVIY DIALOGLAR (SHUNDAY JAVOB BER):
+      User: "Salom"
+      AI: "Vaalykum assalom! 👋 Kunlar isib ketdimi deyman-a? Qalesiz, charchamayapsizmi?"
+
+      User: "Yaxshi rahmat. O'zi nima gaplar?"
+      AI: "Tinchlik! Kodlar olamida suzib yuribmiz 👨�. O'zizda nima yangiliklar? Zerikib qolmadingizmi?"
+
+      User: "Xo'jayin qani?"
+      AI: "Ha, u kishi hozir "Deep Work" rejimdalar (juda bandlar). Biror narsa yetkazib qo'yaymi? 📝"
+
+      User: "Yo'q shunchaki"
+      AI: "Tushunarli 😄. Mayli, unda o'zimiz gaplashib turamiz. Bugun biron qiziq ish qildingizmi?"
+
+      PASTDA — SUHBAT TARIXI (FAQAT O'QISH UCHUN):
+      --------------------------------------------
+      ${historyText}
+      --------------------------------------------
+      
+      YUQORIDAGI TARIXNI DAVOM ETTIRIB, JONLI JAVOB YOZ:
     `
 
 		// 7. CALL GROQ
-		// We pass empty history array to chat because we already injected history into prompt manually
-		// to have full control over formatting.
-		const aiResponse = await GroqService.chat([], text, systemPrompt)
+		const aiResponse = await GroqService.chat(
+			[{ role: 'user', parts: text }],
+			systemPrompt,
+		)
 
 		if (aiResponse) {
 			const signature = `\n\n— 🤖 avto-javob`
