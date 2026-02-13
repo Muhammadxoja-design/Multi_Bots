@@ -1,14 +1,13 @@
-const { GoogleGenerativeAI } = require('@google/generative-ai')
+const Groq = require('groq-sdk')
 
-let model
+let groq
 
 function initAI(apiKey) {
-	const genAI = new GoogleGenerativeAI(apiKey)
-	model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
+	groq = new Groq({ apiKey })
 }
 
 async function generateResponse(userMessage, products) {
-	if (!model) {
+	if (!groq) {
 		throw new Error('AI not initialized. Call initAI first.')
 	}
 
@@ -33,16 +32,26 @@ Qoidalar:
 3. Javoblaring qisqa, lo'nda va tabiiy o'zbek tilida bo'lsin.
 4. Agar mijoz aniq sotib olish niyatini bildirsa (masalan: "100kg bug'doy kerak", "Un olmoqchiman", "Zakaz bermoqchiman"), javobingda albatta "ZAKAZ" so'zini ishlat. (Masalan: "Tushunarli, ZAKAZ qabul qilindi. Aloqaga chiqamiz.").
 5. Narxlarni so'rasa, ro'yxatdagidek aniq ayt.
-
-Mijoz xabari: "${userMessage}"
 `
 
 	try {
-		const result = await model.generateContent(systemPrompt)
-		const response = await result.response
-		return response.text()
+		const completion = await groq.chat.completions.create({
+			messages: [
+				{
+					role: 'system',
+					content: systemPrompt,
+				},
+				{
+					role: 'user',
+					content: userMessage,
+				},
+			],
+			model: 'llama-3.3-70b-versatile',
+		})
+
+		return completion.choices[0]?.message?.content || 'Uzr, javob ololmadim.'
 	} catch (error) {
-		console.error('AI Error:', error)
+		console.error('Groq AI Error:', error)
 		return "Uzr, hozir tizimda nosozlik bor. Birozdan so'ng urinib ko'ring."
 	}
 }

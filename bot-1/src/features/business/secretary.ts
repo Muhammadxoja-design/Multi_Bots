@@ -1,227 +1,132 @@
 import { config } from '@/config/env'
 import { MyContext } from '@/core/context'
-import { renderDashboard } from '@/features/admin/dashboard'
-import { handleAdminInput } from '@/features/admin/input'
-import { CRMService } from '@/services/ai/crm'
+import { db } from '@/db'
+import { crmProfiles, messages, settings } from '@/db/schema'
 import { GroqService } from '@/services/groq'
-import { HistoryService } from '@/services/history'
-import { SettingsService } from '@/services/settings'
-import {
-	extractBusinessInfo,
-	replyBusiness,
-	sendBusinessChatAction,
-} from '@/utils/business'
+import { extractBusinessInfo, sendBusinessChatAction } from '@/utils/business'
 import { logger } from '@/utils/logger'
-import { transformPremiumEmoji } from '@/utils/premiumEmoji'
+import { desc, eq } from 'drizzle-orm'
 
 export class Secretary {
 	static async handle(ctx: MyContext) {
-		logger.info('Secretary.handle called')
 		const info = extractBusinessInfo(ctx)
+		if (!info) return
 
-		if (!info) {
-			logger.warn('Secretary: extractBusinessInfo returned null')
-			return
-		}
+		const { senderId, chatId, connectionId, text, isOwner } = info
 
-		logger.info(
-			`Secretary: Info extracted: sender=${info.senderId}, chat=${info.chatId}, connId=${info.connectionId}, canReply=${info.canReply}, isOwner=${info.isOwner}`,
-		)
-
-		const {
-			senderId,
-			chatId,
-			connectionId,
-			directMessagesTopicId,
-			text,
-			isOwner,
-			canReply,
-			messageId,
-		} = info
-
-		// 0. Check Permissions
-		if (!canReply) {
-			if (isOwner) {
-				logger.warn(`⚠️ Business Connection ${connectionId} cannot reply!`)
-			} else {
-				logger.warn(
-					`Secretary: Skipping customer message because canReply is false (no connectionId)`,
-				)
-			}
-			return
-		}
-
-		// ---------------------------------------------------------
-		// FLOW A: OWNER (Admin Panel)
-		// ---------------------------------------------------------
+		// 1. Validation & Loop Prevention
 		if (isOwner) {
-			// 1. Check Input Mode
-			if (ctx.session.step === 'awaiting_reply_text') {
-				// Inject text into context for handler if needed, or just pass to function
-				// handleAdminInput expects ctx.message.text usually, but here we have business text.
-				// We need to patch ctx.message for handleAdminInput to work, OR refactor handleAdminInput.
-				// Let's patch strictly for this call.
-				;(ctx as any).message = { text }
-				await handleAdminInput(ctx)
-				return
-			}
-
-			// 2. Default: Show Dashboard
-			// If text is "/start" or anything else, just show panel.
-			const dashboard = await renderDashboard(ctx)
-			try {
-				const payload: {
-					business_connection_id?: string
-					direct_messages_topic_id?: number
-					parse_mode: 'HTML'
-					reply_markup: typeof dashboard.keyboard
-				} = {
-					parse_mode: 'HTML',
-					reply_markup: dashboard.keyboard,
-				}
-				if (connectionId) payload.business_connection_id = connectionId
-				if (typeof directMessagesTopicId === 'number') {
-					payload.direct_messages_topic_id = directMessagesTopicId
-				}
-
-				const msg = await ctx.api.sendMessage(chatId, dashboard.text, payload)
-
-				// Save dashboard ID for future edits
-				await SettingsService.updateSettings({
-					dashboardChatId: chatId,
-					dashboardMessageId: msg.message_id,
-				})
-			} catch (e) {
-				logger.error('Failed to send dashboard:', e)
-			}
+			logger.warn(`Secretary: Skipping owner message to prevent loops.`)
 			return
 		}
 
-		// ---------------------------------------------------------
-		// FLOW B: CUSTOMER (Secretary Auto-Reply)
-		// ---------------------------------------------------------
+		// 2. Check "is_away" status from DB
+		const currentSettings = await db.select().from(settings).limit(1)
+		const setting = currentSettings[0]
 
-		// 1. Check Settings
-		const settings = await SettingsService.getSettings()
-
-		// Quiet Hours Check
-		let isQuiet = false
-		if (settings.quietHoursEnabled && settings.quietFrom && settings.quietTo) {
-			const now = new Date()
-			const [h, m] = now
-				.toLocaleTimeString('en-US', {
-					hour12: false,
-					timeZone: 'Asia/Tashkent',
-				})
-				.split(':')
-			const current = parseInt(h) * 60 + parseInt(m)
-			const [startH, startM] = settings.quietFrom.split(':').map(Number)
-			const [endH, endM] = settings.quietTo.split(':').map(Number)
-			const startMinutes = startH * 60 + startM
-			const endMinutes = endH * 60 + endM
-
-			if (startMinutes > endMinutes) {
-				// Overnight
-				if (current >= startMinutes || current < endMinutes) isQuiet = true
-			} else {
-				// Same day
-				if (current >= startMinutes && current < endMinutes) isQuiet = true
-			}
-		}
-
-		// Logic: Away ON + Not Quiet -> Reply.
-		// Away OFF -> Silent.
-		if (!settings.isAway) {
-			logger.info(
-				`Secretary: Skipping message from ${senderId} (Away Mode is OFF)`,
-			)
-			return
-		}
-		if (isQuiet) {
-			logger.info(
-				`Secretary: Skipping message from ${senderId} (Quiet Hours are ON)`,
-			)
+		if (!setting || !setting.isAway) {
+			logger.info(`Secretary: Auto-reply is OFF. Skipping.`)
 			return
 		}
 
-		// 2. Save User Message
-		await HistoryService.saveMessage(senderId, 'user', text)
+		// 3. Send "typing..." action
+		await sendBusinessChatAction(ctx, chatId, 'typing', connectionId)
 
-		// 3. Typing Status
-		await sendBusinessChatAction(
-			ctx,
-			chatId,
-			'typing',
-			connectionId,
-			directMessagesTopicId,
-		)
+		// 4. MEMORY FETCHING STRATEGY
+		// Fetch last 15 messages for this user
+		const recentMessages = await db
+			.select()
+			.from(messages)
+			.where(eq(messages.peerId, senderId))
+			.orderBy(desc(messages.createdAt))
+			.limit(15)
 
-		// 4. Fetch History & Context
-		const historyText = await HistoryService.getRecentContext(senderId, 15)
-		const profile = await CRMService.getProfile(senderId)
-		const userSummary = profile?.summary || 'Yangicha suhbatdosh'
-		const userCat = profile?.relationshipType || "Noma'lum"
+		// Reverse to correct chronological order
+		const history = recentMessages.reverse().map(msg => ({
+			role: msg.role as 'user' | 'assistant' | 'system',
+			parts: msg.content,
+		}))
 
-		// 5. System Prompt (Engaging Mode)
+		const historyText = history
+			.map(msg => `${msg.role === 'user' ? 'User' : 'AI'}: ${msg.parts}`)
+			.join('\n')
+
+		// 5. Save incoming user message to DB
+		await db.insert(messages).values({
+			peerId: senderId,
+			role: 'user',
+			content: text,
+		})
+
+		// Fetch User Profile
+		const profiles = await db
+			.select()
+			.from(crmProfiles)
+			.where(eq(crmProfiles.userId, senderId))
+			.limit(1)
+		const profile = profiles[0]
+		const userSummary = profile?.summary || 'Nomaʼlum suhbatdosh'
+		const userCat = profile?.relationshipType || 'Yangi'
+
+		// 6. DYNAMIC SYSTEM PROMPT GENERATION
+		const autoReplyText = setting.autoReplyText
+		const mood = setting.aiMood
+
 		const systemPrompt = `
-      ROLE: Sen - ${config.OWNER_NAME || "Xo'jayin"}ning aqlli va samimiy AI yordamchimisiz.
-      SENING VAZIFANG: Suhbatdosh bilan qiziqarli suhbat qurish va qo'lingdan kelganicha yordam berish.
+      ROLE: Sen — MuhammadXo'ja (Dasturchi)ning virtual yordamchisisiz.
+      ISMING: "Yordamchi Bot".
       
-      📊 XO'JAYINNING HOLATI: "${settings.autoReplyText}" (Lekin bu senga gaplashishga to'sqinlik qilmaydi).
-      🎭 KAYFIYAT: ${settings.aiMood} (Agar "Hazilkash" bo'lsa - ko'proq emojilar va hazil ishlat).
-      👤 SUHBATDOSH: ${userSummary} (${userCat}).
+      CONTEXT:
+      - Xo'jayin (MuhammadXo'ja) hozir band. Status: "${autoReplyText}".
+      - Suhbatdosh: ${userSummary} (Kategoriya: ${userCat}).
+      - Kayfiyat: ${mood}.
 
-      QAT'IY QOIDALAR:
-      1. **Yordam Ber:** Agar suhbatdosh savol bersa (ilm-fan, tarjima, maslahat), DARHOL javob ber. "Xo'jayin band" deb bahona qilma. Sen o'zing ham aqllisan.
-      2. **Chegara:** Faqat Xo'jayinning shaxsiy hayoti yoki uchrashuvlar haqida so'rasa, "Xo'jayin kelganlarida aytaman" deb javob ber.
-      3. **Qiziqtir:** Suhbatni quruq qoldirma. Oxirida qiziqarli savol ber yoki mavzuga oid fakt ayt.
-      4. **Tarix:** Oldingi suhbatni eslab, mantiqiy davom ettir:
+      QAT'IY QOIDALAR (BUZMA):
+      1. ❌ "Siz kimdan bo'lsiz?", "Xush kelibsiz", "Qo'llab-quvvatlayman" degan g'alati gaplarni ISHLATMA!
+      2. ✅ Odamga o'xshab gapir (Toshkent shevasi aralash adabiy). "Assalomu alaykum", "Qalesiz", "Tinchmisiz" so'zlarini ishlat.
+      3. ✅ Agar suhbatdosh "Men Muhammadxo'jaman" desa, va u haqiqiy xo'jayin bo'lmasa: "Hazillashyapsizmi? Xo'jayin bitta, u ham bo'lsa kod yozib o'tiribdi 😁" deb hazil qil.
+      4. ✅ Agar oddiy gap ("Salom", "Qalesan") yozsa, hol-ahvol so'ra, mavzuni burib yubor (masalan, havo haqida, ish haqida).
+      5. ✅ Suhbat tarixini albatta o'qi va davom ettir.
+      
+      NAMUNAVIY DIALOGLAR (SHUNDAY JAVOB QAYTAR):
+{{ ... }}
       ${historyText}
 
-      JAVOB USLUBI:
-      - O'zbek tilida (Lotin yozuvida).
-      - Qisqa, lo'nda va samimiy.
-      - Xuddi tirik odamdek gaplash (robotdek emas).
-      - Haddan tashqari bachkana bo'lib ketmasin, samimiy va foydali bo'lsin.
+      JAVOB YOZISH (Faqat javob matnini yoz, ortiqcha izohsiz):
     `
 
-		// 6. Generate AI Response
-		// logger.info(`Secretary: Generating AI response for ${senderId}...`)
+		// 7. CALL GROQ
+		// We pass empty history array to chat because we already injected history into prompt manually
+		// to have full control over formatting.
 		const aiResponse = await GroqService.chat([], text, systemPrompt)
-		if (!aiResponse) return
 
-		// 7. Send Reply
-		const finalRefined = transformPremiumEmoji(aiResponse)
+		if (aiResponse) {
+			const signature = `\n\n— 🤖 avto-javob`
+			const finalMessage = aiResponse + signature
 
-		try {
+			// 8. SEND REPLY
 			try {
-				await replyBusiness(ctx, chatId, finalRefined, connectionId, {
-					parse_mode: 'HTML',
-					direct_messages_topic_id: directMessagesTopicId,
-					reply_to_message_id: messageId,
-				})
-			} catch (firstError: any) {
-				const isBusinessPeerInvalid =
-					firstError?.description?.includes?.('BUSINESS_PEER_INVALID') ||
-					firstError?.message?.includes?.('BUSINESS_PEER_INVALID')
-
-				if (
-					!isBusinessPeerInvalid ||
-					typeof directMessagesTopicId !== 'number'
-				) {
-					throw firstError
+				// Use ctx.reply for automatic business handling
+				await ctx.reply(finalMessage, { parse_mode: 'Markdown' })
+			} catch (error) {
+				logger.error(`Secretary: Failed to reply to ${senderId}`, error)
+				// Fallback to HTML if Markdown fails (safer)
+				try {
+					await ctx.reply(finalMessage, { parse_mode: 'HTML' })
+				} catch (e) {
+					logger.error('Secretary: Retry failed', e)
 				}
-
-				logger.warn(
-					`Secretary: retrying without direct_messages_topic_id for ${senderId} (chat=${chatId}, conn=${connectionId})`,
-				)
-				await replyBusiness(ctx, chatId, finalRefined, connectionId, {
-					parse_mode: 'HTML',
-					reply_to_message_id: messageId,
-				})
 			}
 
-			// 8. Log to Owner's Log Group (if configured)
+			// 9. LOGGING & SAVING
+			// Save clean AI reply to DB
+			await db.insert(messages).values({
+				peerId: senderId,
+				role: 'assistant',
+				content: aiResponse, // Store without signature
+			})
+
+			// Forward to Log Group
 			if (config.LOG_GROUP_ID) {
 				try {
 					await ctx.api.sendMessage(
@@ -229,18 +134,13 @@ export class Secretary {
 						`<b>📨 Yangi Suxbat</b>\n\n` +
 							`👤 <b>Kimdan:</b> <a href="tg://user?id=${senderId}">${senderId}</a>\n` +
 							`📥 <b>Xabar:</b> ${text}\n` +
-							`🤖 <b>Javob:</b> ${finalRefined}`,
+							`🤖 <b>Javob:</b> ${aiResponse}`, // Log clean response
 						{ parse_mode: 'HTML' },
 					)
-				} catch (logStats) {
-					logger.error(`Failed to log conversation to LOG_GROUP:`, logStats)
+				} catch (logError) {
+					logger.error('Secretary: Failed to log to group', logError)
 				}
 			}
-		} catch (e) {
-			logger.error(`Secretary: Failed to send reply to ${senderId}:`, e)
 		}
-
-		// 9. Save Assistant Message
-		await HistoryService.saveMessage(senderId, 'assistant', finalRefined)
 	}
 }

@@ -35,9 +35,9 @@ botProcess.on('error', err => {
 // --- Bot 2: Grain Business Bot (Integrated) ---
 console.log('🌾 Launching Bot 2 (Grain Business)...')
 startGrainBot({
-	botToken: process.env.GRAIN_BOT_TOKEN,
-	geminiKey: process.env.GEMINI_API_KEY,
-	orderGroupId: process.env.ORDER_GROUP_ID,
+	botToken: process.env.BOT_TOKEN_2,
+	groqKey: process.env.GROQ_API_KEY_2,
+	orderGroupId: process.env.FORUM_CHAT_ID_2,
 }).catch(err => console.error('❌ Bot 2 Error:', err))
 
 // --- Process Management ---

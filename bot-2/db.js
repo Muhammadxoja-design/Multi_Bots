@@ -13,7 +13,11 @@ function initDb() {
             price INTEGER NOT NULL,
             stock INTEGER NOT NULL,
             description TEXT
-        )
+        );
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
     `)
 
 	// Check if data exists, if not seed it
@@ -28,8 +32,7 @@ function initDb() {
 
 		insert.run("Bug'doy", 3000, 5000, "Oliy sifatli bug'doy")
 		insert.run('Arpa', 2500, 0, 'Chorva uchun arpa') // Tugagan
-		insert.run('Un (1-nav)', 4000, 200, '1-navli un, 50kg qopda') // 200 ta qop, stockda soni saqlanadi yoki kg? User "200 ta qop" dedi.
-		// Taxminan 200 deb yozamiz, promptda tushuntiramiz.
+		insert.run('Un (1-nav)', 4000, 200, '1-navli un, 50kg qopda') // 200 ta qop
 	}
 }
 
@@ -43,8 +46,22 @@ function getProductByName(name) {
 	return db.prepare('SELECT * FROM products WHERE name LIKE ?').get(`%${name}%`)
 }
 
+// Settings Helpers
+function getSetting(key) {
+	const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key)
+	return row ? row.value : null
+}
+
+function setSetting(key, value) {
+	db.prepare(
+		'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+	).run(key, value)
+}
+
 module.exports = {
 	initDb,
 	getProducts,
 	getProductByName,
+	getSetting,
+	setSetting,
 }
