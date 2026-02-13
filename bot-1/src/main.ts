@@ -18,6 +18,8 @@ async function main() {
 	bot.use(
 		session({
 			initial: () => ({
+				topics: {},
+				history: [],
 				step: undefined, // For admin input
 			}),
 			storage: new FileAdapter('sessions.json'),

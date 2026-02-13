@@ -39,3 +39,26 @@ export const crmProfiles = sqliteTable('crm_profiles', {
 	birthday: text('birthday'),
 	lastInteraction: text('last_interaction'),
 })
+
+// Notes Table
+export const notes = sqliteTable('notes', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	userId: integer('user_id').notNull(),
+	content: text('content').notNull(),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`CURRENT_TIMESTAMP`),
+})
+
+// Tasks Table
+export const tasks = sqliteTable('tasks', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	userId: integer('user_id').notNull(),
+	title: text('title').notNull(),
+	isCompleted: integer('is_completed', { mode: 'boolean' })
+		.notNull()
+		.default(false),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`CURRENT_TIMESTAMP`),
+})

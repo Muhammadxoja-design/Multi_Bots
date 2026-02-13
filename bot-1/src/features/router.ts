@@ -1,7 +1,6 @@
 import { MyContext } from '@/core/context'
 import { aiHandler } from '@/features/ai/handler'
 import { notesHandler } from '@/features/notes/handler'
-import { tasksHandler } from '@/features/tasks/handler'
 import { logger } from '@/utils/logger'
 import { Composer } from 'grammy'
 
@@ -20,11 +19,6 @@ mainRouter.on('message:text', async (ctx, next) => {
 	if (threadId === topics.notes) {
 		logger.debug(`Routing to Notes Handler (Thread: ${threadId})`)
 		return notesHandler.middleware()(ctx, next)
-	}
-
-	if (threadId === topics.tasks) {
-		logger.debug(`Routing to Tasks Handler (Thread: ${threadId})`)
-		return tasksHandler.middleware()(ctx, next)
 	}
 
 	if (threadId === topics.general) {
