@@ -1,7 +1,7 @@
 import { config } from '@/config/env'
 import { MyContext } from '@/core/context'
 import { db } from '@/db'
-import { crmProfiles, messages, settings } from '@/db/schema'
+import { messages, settings } from '@/db/schema'
 import { GroqService } from '@/services/groq'
 import { extractBusinessInfo, sendBusinessChatAction } from '@/utils/business'
 import { logger } from '@/utils/logger'
@@ -32,122 +32,117 @@ export class Secretary {
 		// 3. Send "typing..." action
 		await sendBusinessChatAction(ctx, chatId, 'typing', connectionId)
 
-		// 4. MEMORY FETCHING STRATEGY
-		// Fetch last 15 messages for this user
-		const recentMessages = await db
-			.select()
-			.from(messages)
-			.where(eq(messages.peerId, senderId))
-			.orderBy(desc(messages.createdAt))
-			.limit(15)
-
-		// Reverse to correct chronological order
-		const history = recentMessages.reverse().map(msg => ({
-			role: msg.role as 'user' | 'assistant' | 'system',
-			parts: msg.content,
-		}))
-
-		// TARIXNI SAMARALI FORMATLASH
-		// history is already reversed (chronological) from lines 45-48
-		const historyText = history
-			.map(m => {
-				const role = m.role === 'user' ? 'User' : 'AI'
-				return `${role}: ${m.parts || ''}`
-			})
-			.join('\n')
-
-		// 5. Save incoming user message to DB
+		// 4. Save incoming User message to DB
 		await db.insert(messages).values({
 			peerId: senderId,
 			role: 'user',
 			content: text,
 		})
 
-		// Fetch User Profile
-		const profiles = await db
+		// 5. FETCH & CLEAN HISTORY
+		// Fetch last 10 messages for this user + offset 1 (skip the message we just saved)
+		// This prevents duplication of the current message in 'historyText'.
+		const recentMessages = await db
 			.select()
-			.from(crmProfiles)
-			.where(eq(crmProfiles.userId, senderId))
-			.limit(1)
-		const profile = profiles[0]
-		const userSummary = profile?.summary || 'Nomaʼlum suhbatdosh'
+			.from(messages)
+			.where(eq(messages.peerId, senderId))
+			.orderBy(desc(messages.createdAt))
+			// Skip the latest message we just inserted (so it doesn't appear in historyText prematurely)
+			// Actually, usually we WANT the latest message in history if we are building a prompt.
+			// BUT the user prompt instruction said: "Fetch last 10 messages."
+			// And usually we pass current message separately to LLM.
+			// Let's stick to the plan: fetch history.
+			// Logic check: if we just inserted 'text', then 'recentMessages' will include it as the first item.
+			// If we want 'history' to be previous messages, we should skip 1.
+			// If we want 'history' to include current message, we don't skip.
+			// The prompt says: "PASTDA — SUHBAT TARIXI". Currently standard is history + new message.
+			// However, in step 158 I used offset(1).
+			// Let's stick to offset(1) to avoid duplicating the current message if we pass it as `text` to `GroqService.chat`.
+			// Wait, `GroqService.chat` takes `history` (array) and `message` (string).
+			// If I pass `[]` as history to `GroqService.chat` (as done in line 163 of previous code),
+			// then `GroqService` will ONLY see `systemPrompt` and `message`.
+			// So `historyText` in `systemPrompt` MUST contain the PAST history.
+			// So `offset(1)` is CORRECT if `recentMessages` includes the just-inserted message.
+			.offset(1)
+			.limit(10)
 
-		// 6. DYNAMIC SYSTEM PROMPT GENERATION
+		// Reverse to correct chronological order
+		const historyText = recentMessages
+			.reverse()
+			.map(msg => {
+				const role = msg.role === 'user' ? 'User' : 'AI'
+				const content = msg.content || ''
+				return `${role}: ${content}`
+			})
+			.join('\n')
+
+		// 6. CONSTRUCT SYSTEM PROMPT
 		const autoReplyText = setting.autoReplyText
-		const mood = setting.aiMood
+		// const mood = setting.aiMood // User instructions omitted explicit mood here.
 
 		const systemPrompt = `
-      ROLE: Sen — MuhammadXo'ja (Dasturchi)ning o'ta aqlli yordamchisisiz.
-      NOMING: "Yordamchi".
-      
-      CONTEXT (BU QISMNI FAQAT O'QI):
-      - Xo'jayin holati: "${autoReplyText}".
-      - Suhbatdosh: ${userSummary}.
-      - Kayfiyat: ${mood}.
+SYSTEM ROLE:
+Sen — MuhammadXo'ja (Dasturchi)ning virtual yordamchisisiz.
+Isming: "Yordamchi Bot".
+Til: Jonli, ko'cha tili (Toshkent shevasi elementlari bilan).
 
-      ⚠️ QAT'IY TAQIQLAR (BUZMA):
-      1. ❌ O'z javobingni izohlama! "(Bunday gapda...)" degan narsalarni YOZMA.
-      2. ❌ Agar tarixda "Salom" bo'lsa, yana "Salom" deb takrorlama.
-      3. ❌ <tg-emoji> taglarini ishlatma! Oddiy emojilar (😄, 👍, 👋) ishlat.
-      4. ❌ "Suhbat tarixi" degan so'zni chatga chiqarish TAQIQLANADI.
+CONTEXT:
+- Xo'jayin holati: "${autoReplyText}"
+- Tarix (pastda): Suhbatning davomi.
 
-      ✅ QANDAY GAPIRISH KERAK (STYLE):
-      - Qisqa va lo'nda. Uzun doston yozma.
-      - Jonli O'zbek tili (Toshkent shevasi aralash).
-      - Agar user "Yo'q" yoki "Rahmat" desa, majburlama. "Mayli", "O'zingiz bilasiz" deb qisqa javob qil.
+QAT'IY QOIDALAR (BUZMA):
+1. ❌ O'z javobingni izohlama! "(Bunday gapda...)" yoki shunga o'xshash ichki o'ylaringni YOZMA.
+2. ❌ Agar tarixda oxirgi bo'lib "Salom" turgan bo'lsa, yana "Salom" deb takrorlama. Mavzuni o'zgartir yoki savol ber.
+3. ❌ <tg-emoji> taglarini ishlatma! Oddiy emojilar (😄, 👍, 👋) ishlat.
+4. ❌ "Suhbat tarixi" degan so'zni chatga chiqarish TAQIQLANADI.
+5. ✅ Qisqa va lo'nda yoz.
 
-      MANTIQIY NAMUNALAR:
-      
-      (Holat: User rad etdi)
-      User: "Yo'q rahmat"
-      AI: "Tushunarli. Agar biror narsa kerak bo'lsa yozarsiz. Tinch bo'ling! 👋"
+NAMUNALAR (FEW-SHOT):
+User: Nima gap?
+AI: Tinchlik, o'zizda nima gaplar?
 
-      (Holat: User hol-ahvol so'radi)
-      User: "Qalesan"
-      AI: "Yaxshi rahmat, o'zizchi? Charchamayapsizmi?"
+User: Xo'jayin qachon keladi?
+AI: Anig'ini bilmadim-u, lekin hozir bandlar. Xabar qoldirasizmi?
 
-      (Holat: User salom berdi)
-      User: "Assalomu alaykum"
-      AI: "Vaalykum assalom! Xush ko'rdik. Xizmat?"
+User: Salom
+AI: Vaaalaykum assalom! Keling, xizmat?
 
-      PASTDA — SUHBAT TARIXI (FAQAT O'QISH UCHUN):
-      --------------------------------------------
-      ${historyText}
-      --------------------------------------------
-      
-      YUQORIDAGI TARIXNI DAVOM ETTIRIB, FAQAT JAVOB MATNINI YOZ (IZOHSIZ):
-    `
+PASTDA — SUHBAT TARIXI (FAQAT O'QISH UCHUN):
+--------------------------------------------
+${historyText}
+--------------------------------------------
 
-		// 7. CALL GROQ
-		const aiResponse = await GroqService.chat(
-			[{ role: 'user', parts: text }],
-			systemPrompt,
-		)
+YUQORIDAGI TARIXNI INOBATGA OLIB, OXIRGI XABARGA JAVOB YOZ:
+`
 
+		// 7. CALL GROQ API
+		// We pass [] as history because we manually injected history into the system prompt.
+		const aiResponse = await GroqService.chat([], text, systemPrompt)
+
+		// 8. SEND REPLY
 		if (aiResponse) {
+			const cleanResponse = aiResponse.trim()
 			const signature = `\n\n— 🤖 avto-javob`
-			const finalMessage = aiResponse + signature
+			const finalMessage = cleanResponse + signature
 
-			// 8. SEND REPLY
 			try {
-				// Use ctx.reply for automatic business handling
 				await ctx.reply(finalMessage, { parse_mode: 'Markdown' })
 			} catch (error) {
 				logger.error(`Secretary: Failed to reply to ${senderId}`, error)
-				// Fallback to HTML if Markdown fails (safer)
+				// Fallback to HTML or plain text if Markdown fails (safer)
 				try {
-					await ctx.reply(finalMessage, { parse_mode: 'HTML' })
+					await ctx.reply(finalMessage)
 				} catch (e) {
 					logger.error('Secretary: Retry failed', e)
 				}
 			}
 
-			// 9. LOGGING & SAVING
-			// Save clean AI reply to DB
+			// 9. SAVE AI REPLY TO DB
+			// Save clean AI reply without signature
 			await db.insert(messages).values({
 				peerId: senderId,
 				role: 'assistant',
-				content: aiResponse, // Store without signature
+				content: cleanResponse,
 			})
 
 			// Forward to Log Group
@@ -158,7 +153,7 @@ export class Secretary {
 						`<b>📨 Yangi Suxbat</b>\n\n` +
 							`👤 <b>Kimdan:</b> <a href="tg://user?id=${senderId}">${senderId}</a>\n` +
 							`📥 <b>Xabar:</b> ${text}\n` +
-							`🤖 <b>Javob:</b> ${aiResponse}`, // Log clean response
+							`🤖 <b>Javob:</b> ${cleanResponse}`, // Log clean response
 						{ parse_mode: 'HTML' },
 					)
 				} catch (logError) {
