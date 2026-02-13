@@ -6,7 +6,7 @@
 		"start": "node index.js",
 		"dev": "node index.js",
 		"build": "cd bot-1 && npm run build",
-		"postinstall": "npm run build"
+		"postinstall": "cd bot-1 && npm install && npm run build"
 	},
 	"keywords": [],
 	"author": "",
